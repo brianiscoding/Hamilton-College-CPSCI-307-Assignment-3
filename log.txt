@@ -1,0 +1,55 @@
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: btran (btran-hamilton-college). Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.18.7
+wandb: Run data is saved locally in ./wandb/run-20241119_163447-a4znuahv
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run rich-firefly-1
+wandb: ⭐️ View project at https://wandb.ai/btran-hamilton-college/eng2fre-translation
+wandb: 🚀 View run at https://wandb.ai/btran-hamilton-college/eng2fre-translation/runs/a4znuahv
+
+  | Name       | Type                 | Params | Mode 
+------------------------------------------------------------
+0 | model      | Transformer          | 56.9 M | train
+1 | loss_fn    | CrossEntropyLoss     | 0      | train
+2 | bleu_score | MulticlassCohenKappa | 0      | train
+------------------------------------------------------------
+56.9 M    Trainable params
+0         Non-trainable params
+56.9 M    Total params
+227.794   Total estimated model params size (MB)
+158       Modules in train mode
+0         Modules in eval mode
+Sanity Checking: |                                                                                          | 0/? [00:00<?, ?it/s]/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:424: The 'val_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=7` in the `DataLoader` to improve performance.
+Sanity Checking DataLoader 0:   0%|                                                                         | 0/2 [00:00<?, ?it/s]/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/torch/amp/autocast_mode.py:265: UserWarning: User provided device_type of 'cuda', but CUDA is not available. Disabling
+  warnings.warn(
+/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:424: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=7` in the `DataLoader` to improve performance.
+Epoch 0: 100%|████████████████████████████████████████████████████████████████████| 3761/3761 [35:45<00:00,  1.75it/s, v_num=uahv]Traceback (most recent call last):                                                                                                
+  File "/Users/m1macsintelmacs/Hamilton College/4.1/dl/drafts/3/assignment3.py", line 233, in <module>
+    trainer.fit(model, train_dataloader, val_dataloader)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 538, in fit
+    call._call_and_handle_interrupt(
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/call.py", line 47, in _call_and_handle_interrupt
+    return trainer_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 574, in _fit_impl
+    self._run(model, ckpt_path=ckpt_path)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 981, in _run
+    results = self._run_stage()
+              ^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 1025, in _run_stage
+    self.fit_loop.run()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/loops/fit_loop.py", line 206, in run
+    self.on_advance_end()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/loops/fit_loop.py", line 378, in on_advance_end
+    call._call_callback_hooks(trainer, "on_train_epoch_end", monitoring_callbacks=True)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/call.py", line 218, in _call_callback_hooks
+    fn(trainer, trainer.lightning_module, *args, **kwargs)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/callbacks/early_stopping.py", line 190, in on_train_epoch_end
+    self._run_early_stopping_check(trainer)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/callbacks/early_stopping.py", line 202, in _run_early_stopping_check
+    if trainer.fast_dev_run or not self._validate_condition_metric(  # disable early_stopping with fast_dev_run
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/callbacks/early_stopping.py", line 153, in _validate_condition_metric
+    raise RuntimeError(error_msg)
+RuntimeError: Early stopping conditioned on metric `val_loss` which is not available. Pass in or modify your `EarlyStopping` callback to use any of the following: ``
+wandb: 🚀 View run rich-firefly-1 at: https://wandb.ai/btran-hamilton-college/eng2fre-translation/runs/a4znuahv

@@ -1,0 +1,20 @@
+
+  | Name       | Type                 | Params | Mode
+------------------------------------------------------------
+0 | model      | Transformer          | 56.9 M | train
+1 | loss_fn    | CrossEntropyLoss     | 0      | train
+2 | bleu_score | MulticlassCohenKappa | 0      | train
+------------------------------------------------------------
+56.9 M    Trainable params
+0         Non-trainable params
+56.9 M    Total params
+227.794   Total estimated model params size (MB)
+158       Modules in train mode
+0         Modules in eval mode
+Epoch 0:  16%|█████████████▋                                                                         | 594/3761 [05:26<28:59,  1.82it/s, v_num=0kj9]
+/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:424: The 'val_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=7` in the `DataLoader` to improve performance.
+/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/torch/amp/autocast_mode.py:265: UserWarning: User provided device_type of 'cuda', but CUDA is not available. Disabling
+  warnings.warn(
+/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:424: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=7` in the `DataLoader` to improve performance.
+
+Detected KeyboardInterrupt, attempting graceful shutdown ...

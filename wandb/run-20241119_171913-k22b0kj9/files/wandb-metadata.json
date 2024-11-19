@@ -1,0 +1,39 @@
+{
+  "os":  "macOS-14.5-arm64-arm-64bit",
+  "python":  "3.12.4",
+  "startedAt":  "2024-11-19T22:19:13.527793Z",
+  "program":  "/Users/m1macsintelmacs/Hamilton College/4.1/dl/drafts/3/assignment3.py",
+  "codePath":  "assignment3.py",
+  "git":  {
+    "remote":  "https://github.com/brianiscoding/Hamilton-College-CPSCI-307-Assignment-3.git",
+    "commit":  "fb28018468a41ec872eae5baf9d5855491c8709d"
+  },
+  "email":  "btran@hamilton.edu",
+  "root":  ".",
+  "host":  "brians-mbp-3.hamilton.edu",
+  "username":  "m1macsintelmacs",
+  "executable":  "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+  "codePathLocal":  "assignment3.py",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "245107195904",
+      "used":  "179525230592"
+    }
+  },
+  "memory":  {
+    "total":  "17179869184"
+  },
+  "cpu":  {
+    "count":  8,
+    "countLogical":  8
+  },
+  "apple":  {
+    "name":  "Apple M1",
+    "ecpuCores":  4,
+    "pcpuCores":  4,
+    "gpuCores":  8,
+    "memoryGb":  16
+  }
+}
