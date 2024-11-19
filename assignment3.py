@@ -151,11 +151,16 @@ class TranslationModel(pl.LightningModule):
         loss = self.loss_fn(output.view(-1, output.size(-1)), tgt_output.view(-1))
         return loss
 
-    def on_validation_epoch_end(self):
-        # Gather the validation results for the entire epoch (e.g., loss or any metrics)
-        val_loss = self.trainer.callback_metrics["val_loss"].item() if "val_loss" in self.trainer.callback_metrics else 0.0
-        self.log("val_loss", val_loss, prog_bar=True)
-        # If you need to compute metrics like BLEU, you can calculate them here too.
+    def test_step(self, batch, batch_idx):
+        src, tgt = batch
+        preds = self.forward(src)  # Run the model on the source data
+        bleu_score = self.calculate_bleu(preds, tgt)  # Custom BLEU calculation function
+        self.log("test_bleu", bleu_score, prog_bar=True)  # Log the BLEU score
+        return {"test_bleu": bleu_score}
+
+    def calculate_bleu(self, preds, targets):
+        # Convert predictions and targets to text and calculate BLEU score
+        return self.bleu_metric(preds, targets)  # Use the BLEUScore metric from torchmetrics
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.model.parameters(), lr=1e-4)
