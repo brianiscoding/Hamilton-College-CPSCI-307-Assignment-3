@@ -1,284 +1,255 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping
-import sentencepiece as spm
-import torchmetrics
-from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
-import pandas as pd
-from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.nn.utils.rnn import pad_sequence
-from torchmetrics.text import BLEUScore  # Import the correct BLEU score metric
+import math
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+import sentencepiece as spm
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 
-# Load the tab-separated .txt file (assuming the file has no headers and columns are: English <tab> French)
-df = pd.read_csv("eng_fra.txt", sep="\t", header=None, names=["english", "french"])
+# ------------------------------
+# Preprocessing: Tokenization
+# ------------------------------
 
-# Split the dataset into training, validation, and test sets (80% train, 10% val, 10% test)
-train_data, test_data = train_test_split(df, test_size=0.2, random_state=42)
-train_data, val_data = train_test_split(train_data, test_size=0.1, random_state=42)
+def preprocess_and_split(input_file, vocab_size=1000, test_size=0.2, random_state=42):
+    # Read the tab-separated text file
+    with open(input_file, "r") as f:
+        data = f.readlines()
 
-# Save the split data if necessary (optional)
-train_data.to_csv("train_data.txt", sep="\t", index=False, header=False)
-val_data.to_csv("val_data.txt", sep="\t", index=False, header=False)
-test_data.to_csv("test_data.txt", sep="\t", index=False, header=False)
+    # Split data into English and French sentences
+    english_sentences = []
+    french_sentences = []
+    for line in data:
+        english, french = line.strip().split("\t")
+        english_sentences.append(english)
+        french_sentences.append(french)
 
+    # Train SentencePiece tokenizers for English and French
+    def train_tokenizer(sentences, model_prefix):
+        temp_file = f"{model_prefix}_temp.txt"
+        with open(temp_file, "w", encoding='utf-8') as f:
+            f.write("\n".join(sentences))
+        spm.SentencePieceTrainer.train(
+            input=temp_file, model_prefix=model_prefix, vocab_size=vocab_size, character_coverage=1.0
+        )
 
-# Tokenization using SentencePiece for both languages
-def train_sentencepiece_model(corpus, model_prefix, vocab_size=8000):
-    # Save the corpus to a text file
-    with open(f"{model_prefix}_corpus.txt", "w", encoding='utf-8') as f:
-        for sentence in corpus:
-            f.write(f"{sentence}\n")
+    train_tokenizer(english_sentences, "english_bpe")
+    train_tokenizer(french_sentences, "french_bpe")
 
-    # Train the SentencePiece model
-    spm.SentencePieceTrainer.train(
-        input=f"{model_prefix}_corpus.txt",
-        model_prefix=model_prefix,
-        vocab_size=vocab_size,
-        model_type="bpe",
-    )
+    english_tokenizer = spm.SentencePieceProcessor(model_file="english_bpe.model")
+    french_tokenizer = spm.SentencePieceProcessor(model_file="french_bpe.model")
 
+    # Tokenize English and French sentences
+    english_tokens = [english_tokenizer.encode(x, out_type=int) for x in english_sentences]
+    french_tokens = [french_tokenizer.encode(x, out_type=int) for x in french_sentences]
 
-# Train SentencePiece models for both English and French datasets
-train_sentencepiece_model(train_data["english"], "en_model")
-train_sentencepiece_model(train_data["french"], "fr_model")
+    # Split data into training and validation sets
+    train_data, val_data = train_test_split(list(zip(english_tokens, french_tokens)), test_size=test_size, random_state=random_state)
 
-# Load the SentencePiece models
-sp_en = spm.SentencePieceProcessor(model_file="en_model.model")
-sp_fr = spm.SentencePieceProcessor(model_file="fr_model.model")
-
-
-# Tokenize the sentences
-def tokenize_sentence(sentence, sp_model):
-    return sp_model.encode(sentence, out_type=str)
+    return train_data, val_data, english_tokenizer, french_tokenizer
 
 
-# Define a Dataset class to handle tokenized sentences
+# ------------------------------
+# Dataset and DataModule
+# ------------------------------
+
 class TranslationDataset(Dataset):
-    def __init__(self, english_sentences, french_sentences, sp_en, sp_fr):
-        self.english_sentences = english_sentences
-        self.french_sentences = french_sentences
-        self.sp_en = sp_en
-        self.sp_fr = sp_fr
+    def __init__(self, data):
+        self.data = data
 
     def __len__(self):
-        return len(self.english_sentences)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        # Tokenize the sentences using SentencePiece models
-        eng_tokens = self.sp_en.encode(self.english_sentences.iloc[idx], out_type=int)
-        fr_tokens = self.sp_fr.encode(self.french_sentences.iloc[idx], out_type=int)
-
-        return torch.tensor(eng_tokens), torch.tensor(fr_tokens)
-
+        src, tgt = self.data[idx]
+        src = torch.tensor(src, dtype=torch.long)
+        tgt = torch.tensor(tgt, dtype=torch.long)
+        return src, tgt
 
 def collate_fn(batch):
-    # pad src and tgt sequences to same length
-    src, tgt = zip(*batch)
-    src_padded = pad_sequence(src, padding_value=0)
-    tgt_padded = pad_sequence(tgt, padding_value=0)
-    return src_padded, tgt_padded
+    src_batch, tgt_batch = zip(*batch)
+
+    # Pad sequences dynamically for each batch
+    src_batch = pad_sequence(src_batch, batch_first=True, padding_value=0)
+    tgt_batch = pad_sequence(tgt_batch, batch_first=True, padding_value=0)
+
+    return src_batch, tgt_batch
+
+class TranslationDataModule(pl.LightningDataModule):
+    def __init__(self, train_data, val_data, batch_size=32):
+        super().__init__()
+        self.train_data = train_data
+        self.val_data = val_data
+        self.batch_size = batch_size
+
+    def setup(self, stage=None):
+        self.train_dataset = TranslationDataset(self.train_data)
+        self.val_dataset = TranslationDataset(self.val_data)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=collate_fn)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, collate_fn=collate_fn)
 
 
-# Create Datasets and DataLoaders
-train_dataset = TranslationDataset(
-    train_data["english"], train_data["french"], sp_en, sp_fr
-)
-val_dataset = TranslationDataset(val_data["english"], val_data["french"], sp_en, sp_fr)
-test_dataset = TranslationDataset(
-    test_data["english"], test_data["french"], sp_en, sp_fr
-)
+# ------------------------------
+# Seq2Seq Transformer Model
+# ------------------------------
 
-train_dataloader = DataLoader(train_dataset, batch_size=32, collate_fn=collate_fn)
-val_dataloader = DataLoader(val_dataset, batch_size=32, collate_fn=collate_fn)
-test_dataloader = DataLoader(test_dataset, batch_size=32, collate_fn=collate_fn)
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
 
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
-# Define the Transformer Model
-class Transformer(nn.Module):
-    def __init__(
-        self, input_dim, output_dim, emb_dim=256, n_heads=8, num_layers=6, dropout=0.1
-    ):
-        super(Transformer, self).__init__()
+    def forward(self, x):
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
 
-        # Embeddings for input and output languages
-        self.src_embedding = nn.Embedding(input_dim, emb_dim)
-        self.tgt_embedding = nn.Embedding(output_dim, emb_dim)
+class Decoder(nn.Module):
+    def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        decoder_layer = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers, norm=nn.LayerNorm(d_model))
 
-        # Positional encoding layer
-        self.positional_encoding = nn.Parameter(
-            torch.zeros(1, 1000, emb_size)
-        )  # Ensure this size is sufficient
-
-        # Transformer Encoder and Decoder
-        self.transformer = nn.Transformer(
-            d_model=emb_dim,
-            nhead=n_heads,
-            num_encoder_layers=num_layers,
-            num_decoder_layers=num_layers,
-            dropout=dropout,
+    def forward(self, tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None):
+        tgt = self.embedding(tgt) * math.sqrt(self.embedding.embedding_dim)
+        tgt = self.pos_encoder(tgt.transpose(0, 1))  # Transformer expects (seq_len, batch_size, d_model)
+        output = self.decoder(
+            tgt, 
+            memory.transpose(0, 1),  # Transpose memory to (seq_len, batch_size, d_model)
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask
         )
+        return output.transpose(0, 1)  # Return to (batch_size, tgt_seq_len, d_model)
 
-        # Output layer
-        self.fc_out = nn.Linear(emb_dim, output_dim)
-
-        # Activation function
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, src, tgt):
-
-        # Add positional encoding to input and target
-        src = self.src_embedding(src) + self.positional_encoding[:, : src.size(1), :]
-        tgt = self.tgt_embedding(tgt) + self.positional_encoding[:, : tgt.size(1), :]
-
-        # Pass through Transformer
-        output = self.transformer(src, tgt)
-
-        # Pass through output layer
-        output = self.fc_out(output)
-        return output
-
-# Define the TranslationModel
-class TranslationModel(pl.LightningModule):
-    def __init__(
-        self, input_dim, output_dim, sp_en, sp_fr, emb_dim=256, n_heads=8, num_layers=6, dropout=0.1
-    ):
-        super(TranslationModel, self).__init__()
-        self.model = Transformer(
-            input_dim, output_dim, emb_dim, n_heads, num_layers, dropout
-        )
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=0)  # Ignore padding tokens
-        self.sp_en = sp_en  # Store the SentencePiece model for English
-        self.sp_fr = sp_fr  # Store the SentencePiece model for French
-        # BLEU score metric (ensure you have the right metric for translation)
-        self.bleu_score = BLEUScore(n_gram=4)
-
-    def forward(self, src, tgt=None):
-        src = self.model.src_embedding(src) + self.model.positional_encoding[:, :src.size(1), :]
+class Encoder(nn.Module):
+    def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
+        super(Encoder, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        if tgt is not None:
-            tgt = self.model.tgt_embedding(tgt) + self.model.positional_encoding[:, :tgt.size(1), :]
-            output = self.model.transformer(src, tgt)
-        else:
-            output = self.model.transformer.encoder(src)
+    def forward(self, src, src_key_padding_mask=None):
+        src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
+        src = self.pos_encoder(src.transpose(0, 1))  # Transformer expects (seq_len, batch_size, d_model)
+        output = self.encoder(
+            src, 
+            src_key_padding_mask=src_key_padding_mask
+        )
+        return output.transpose(0, 1)  # Return to (batch_size, seq_len, d_model)
 
-        output = self.model.fc_out(output)
-        return output
+    
+class Seq2SeqModel(pl.LightningModule):
+    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, nhead, num_encoder_layers, num_decoder_layers,
+                 dim_feedforward, lr, max_len=5000, dropout=0.1):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.encoder = Encoder(src_vocab_size, d_model, nhead, num_encoder_layers, dim_feedforward, dropout)
+        self.decoder = Decoder(tgt_vocab_size, d_model, nhead, num_decoder_layers, dim_feedforward, dropout)
+        self.output_layer = nn.Linear(d_model, tgt_vocab_size)
+        self.lr = lr
+        self.criterion = nn.CrossEntropyLoss(ignore_index=0)
+
+    def forward(self, src, tgt, src_mask=None, tgt_mask=None, src_padding_mask=None, tgt_padding_mask=None):
+        memory = self.encoder(src, src_padding_mask)
+        output = self.decoder(
+            tgt, memory,
+            tgt_mask=tgt_mask,
+            memory_mask=None,  # Typically not used
+            tgt_key_padding_mask=tgt_padding_mask
+        )
+        return self.output_layer(output)
+
+    def generate_square_subsequent_mask(self, sz):
+        mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
+        return mask
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
-        tgt_input = tgt[:-1, :]
-        tgt_output = tgt[1:, :]
+        tgt_input = tgt[:, :-1]  # Input to decoder
+        tgt_output = tgt[:, 1:]  # Target for loss
 
-        output = self(src, tgt_input)
+        # Generate masks
+        src_mask = None
+        tgt_mask = self.generate_square_subsequent_mask(tgt_input.size(1))
+        loss = self.forward(src, tgt_input, src_mask, tgt_mask)
+        loss = self.criterion(loss.view(-1, loss.size(-1)), tgt_output.contiguous().view(-1))
 
-        loss = self.loss_fn(output.view(-1, output.size(-1)), tgt_output.view(-1))
-        self.log("train_loss", loss, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
-        tgt_input = tgt[:-1, :]
-        tgt_output = tgt[1:, :]
+        tgt_input = tgt[:, :-1]  # Input to decoder
+        tgt_output = tgt[:, 1:]  # Target for loss
 
-        output = self(src, tgt_input)
+        # Generate masks
+        src_mask = None
+        tgt_mask = self.generate_square_subsequent_mask(tgt_input.size(1))
+        loss = self.forward(src, tgt_input, src_mask, tgt_mask)
+        loss = self.criterion(loss.view(-1, loss.size(-1)), tgt_output.contiguous().view(-1))
 
-        val_loss = self.loss_fn(output.view(-1, output.size(-1)), tgt_output.view(-1))
-        self.log("val_loss", val_loss, on_epoch=True, prog_bar=True)
-        
-        # BLEU score calculation for validation
-        bleu_score = self.calculate_bleu(output, tgt)
-        self.log("val_bleu", bleu_score, on_epoch=True, prog_bar=True)
-        return val_loss
-
-    def calculate_bleu(self, preds, targets):
-        # Apply argmax to get the predicted tokens (ignoring the vocab dimension)
-        preds = preds.argmax(dim=-1)  # Shape will be [seq_len, batch_size]
-        
-        # Swap dimensions so that preds and targets match expected format [batch_size, seq_len]
-        preds = preds.permute(1, 0)
-        targets = targets.permute(1, 0)
-        
-        preds = preds.tolist()
-        targets = targets.tolist()
-
-        # Detokenize the predictions and targets using SentencePiece models
-        detok_preds = [self.sp_fr.decode(p) for p in preds]
-        detok_targets = [self.sp_fr.decode(t) for t in targets]
-        
-        # Calculate BLEU score
-        return self.bleu_score(detok_preds, detok_targets)
-
-    def test_step(self, batch, batch_idx):
-        src, tgt = batch
-
-        tgt_input = torch.zeros((1, src.size(1)), dtype=torch.long, device=self.device)
-
-        for _ in range(50):  # Max decode length
-            output = self(src, tgt_input)
-            next_token = output[-1].argmax(dim=-1, keepdim=True)
-            tgt_input = torch.cat([tgt_input, next_token], dim=0)
-
-            if torch.all(next_token == 1):
-                break
-
-        bleu_score = self.calculate_bleu(tgt_input, tgt)
-        self.log("test_bleu", bleu_score, prog_bar=True)
-        return {"test_bleu": bleu_score}
+        return loss
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.model.parameters(), lr=1e-4)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.7)
-        return [optimizer], [scheduler]
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer
 
-# PyTorch Lightning Trainer setup
-wandb_logger = WandbLogger(project="eng2fre-translation")
 
-# Early stopping callback
-early_stopping = EarlyStopping(
-    monitor="val_loss",  # Metric to monitor
-    patience=3,          # Number of epochs with no improvement to wait before stopping
-    verbose=True,        # Print a message when stopping
-    mode="min"           # "min" because we're minimizing validation loss
-)
+# ------------------------------
+# Main Training Code
+# ------------------------------
 
-checkpoint_callback = ModelCheckpoint(
-    monitor="val_loss",  # Metric to monitor
-    save_top_k=1,        # Save only the best model
-    mode="min",          # "min" for loss, "max" for metrics like accuracy
-    save_weights_only=False,  # Save full model (weights + architecture)
-    dirpath="checkpoints",    # Directory to save checkpoints
-    filename="model-{epoch:02d}-{val_loss:.2f}"  # Naming convention
-)
+if __name__ == "__main__":
+    # Define hyperparameters
+    input_file = "eng_fra.txt"
+    batch_size = 32
+    vocab_size = 1000
+    lr = 1e-4
+    d_model = 512
+    nhead = 8
+    num_encoder_layers = 6
+    num_decoder_layers = 6
+    dim_feedforward = 2048
 
-# Model parameters
-vocab_size_src = 8000  # Replace with actual vocab size for English
-vocab_size_tgt = 8000  # Replace with actual vocab size for French
-emb_size = 512  # Embedding size, make sure it's divisible by num_heads
-num_heads = 8  # Number of attention heads, should divide emb_size evenly
-hidden_size = 2048
-num_layers = 6  # Number of layers
+    # Preprocess and split data
+    train_data, val_data, english_tokenizer, french_tokenizer = preprocess_and_split(input_file, vocab_size)
 
-# Instantiate the model
-model = TranslationModel(
-    vocab_size_src, vocab_size_tgt, sp_en, sp_fr, emb_size, num_heads, num_layers
-)
-# ------------------ TRAINING WITH PyTorch Lightning ------------------ #
+    # Initialize model and data module
+    model = Seq2SeqModel(
+        len(english_tokenizer), len(french_tokenizer), d_model, nhead,
+        num_encoder_layers, num_decoder_layers, dim_feedforward, lr
+    )
+    data_module = TranslationDataModule(train_data, val_data, batch_size)
 
-trainer = pl.Trainer(
-    logger=wandb_logger,  # Use W&B logger for experiment tracking
-    max_epochs=10,  # Set the number of epochs
-    accelerator = "gpu" if torch.cuda.is_available() else "cpu",  # Specify the use of GPU 
-    precision=16,  # Use mixed precision if available
-    callbacks=[checkpoint_callback, early_stopping],  # Implement checkpointing and early stopping
-)
+    # Initialize W&B logger
+    wandb_logger = WandbLogger(project="eng2fre-translation")
 
-# Train the model
-trainer.fit(model, train_dataloader, val_dataloader)
+    # Add early stopping and checkpointing
+    early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
+    checkpoint_callback = ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min")
 
-# ------------------ TESTING WITH PyTorch Lightning ------------------ #
-
-# trainer.test(model, test_dataloader)
+    # Train the model
+    trainer = pl.Trainer(
+        max_epochs=20,
+        accelerator="gpu" if torch.torch.cuda.is_available() else "cpu",
+        logger=wandb_logger,
+        callbacks=[early_stopping, checkpoint_callback],
+        gradient_clip_val=1.0
+    )
+    trainer.fit(model, data_module)
