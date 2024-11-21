@@ -15,7 +15,7 @@ from pytorch_lightning.loggers import WandbLogger
 # Preprocessing: Tokenization
 # ------------------------------
 
-def preprocess_and_split(input_file, vocab_size=1000, test_size=0.2, random_state=42):
+def preprocess_and_split(input_file, vocab_size=8000, test_size=0.2, random_state=42):
     # Read the tab-separated text file
     with open(input_file, "r") as f:
         data = f.readlines()
@@ -37,9 +37,11 @@ def preprocess_and_split(input_file, vocab_size=1000, test_size=0.2, random_stat
             input=temp_file, model_prefix=model_prefix, vocab_size=vocab_size, character_coverage=1.0
         )
 
+    # Train tokenizers
     train_tokenizer(english_sentences, "english_bpe")
     train_tokenizer(french_sentences, "french_bpe")
 
+    # Load tokenizers
     english_tokenizer = spm.SentencePieceProcessor(model_file="english_bpe.model")
     french_tokenizer = spm.SentencePieceProcessor(model_file="french_bpe.model")
 
@@ -57,6 +59,7 @@ def preprocess_and_split(input_file, vocab_size=1000, test_size=0.2, random_stat
 # Dataset and DataModule
 # ------------------------------
 
+# Define a Dataset class to handle tokenized sentences
 class TranslationDataset(Dataset):
     def __init__(self, data):
         self.data = data
@@ -70,6 +73,7 @@ class TranslationDataset(Dataset):
         tgt = torch.tensor(tgt, dtype=torch.long)
         return src, tgt
 
+# Define a collate function to pad sequences dynamically
 def collate_fn(batch):
     src_batch, tgt_batch = zip(*batch)
 
@@ -79,6 +83,7 @@ def collate_fn(batch):
 
     return src_batch, tgt_batch
 
+# Define a DataModule class
 class TranslationDataModule(pl.LightningDataModule):
     def __init__(self, train_data, val_data, batch_size=32):
         super().__init__()
@@ -101,6 +106,7 @@ class TranslationDataModule(pl.LightningDataModule):
 # Seq2Seq Transformer Model
 # ------------------------------
 
+# Define a Positional Encoding class
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
@@ -117,6 +123,7 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
+# Define a Decoder class
 class Decoder(nn.Module):
     def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
         super().__init__()
@@ -136,6 +143,7 @@ class Decoder(nn.Module):
         )
         return output.transpose(0, 1)  # Return to (batch_size, tgt_seq_len, d_model)
 
+# Define an Encoder class
 class Encoder(nn.Module):
     def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
         super(Encoder, self).__init__()
@@ -144,7 +152,8 @@ class Encoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-    def forward(self, src, src_key_padding_mask=None):
+    
+    def forward(self, src, src_key_padding_mask=None):        
         src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
         src = self.pos_encoder(src.transpose(0, 1))  # Transformer expects (seq_len, batch_size, d_model)
         output = self.encoder(
@@ -153,7 +162,7 @@ class Encoder(nn.Module):
         )
         return output.transpose(0, 1)  # Return to (batch_size, seq_len, d_model)
 
-    
+# Define a Seq2SeqModel
 class Seq2SeqModel(pl.LightningModule):
     def __init__(self, src_vocab_size, tgt_vocab_size, d_model, nhead, num_encoder_layers, num_decoder_layers,
                  dim_feedforward, lr, max_len=5000, dropout=0.1):
@@ -163,6 +172,7 @@ class Seq2SeqModel(pl.LightningModule):
         self.encoder = Encoder(src_vocab_size, d_model, nhead, num_encoder_layers, dim_feedforward, dropout)
         self.decoder = Decoder(tgt_vocab_size, d_model, nhead, num_decoder_layers, dim_feedforward, dropout)
         self.output_layer = nn.Linear(d_model, tgt_vocab_size)
+        self.softmax = nn.Softmax(dim=-1)
         self.lr = lr
         self.criterion = nn.CrossEntropyLoss(ignore_index=0)
 
@@ -174,7 +184,8 @@ class Seq2SeqModel(pl.LightningModule):
             memory_mask=None,  # Typically not used
             tgt_key_padding_mask=tgt_padding_mask
         )
-        return self.output_layer(output)
+        output = self.output_layer(output)
+        return output
 
     def generate_square_subsequent_mask(self, sz):
         mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
@@ -188,10 +199,12 @@ class Seq2SeqModel(pl.LightningModule):
         # Generate masks
         src_mask = None
         tgt_mask = self.generate_square_subsequent_mask(tgt_input.size(1))
-        loss = self.forward(src, tgt_input, src_mask, tgt_mask)
-        loss = self.criterion(loss.view(-1, loss.size(-1)), tgt_output.contiguous().view(-1))
+        train_loss = self.forward(src, tgt_input, src_mask, tgt_mask)
+        train_loss = self.criterion(train_loss.view(-1, train_loss.size(-1)), tgt_output.contiguous().view(-1))
 
-        return loss
+        self.log("train_loss", train_loss, on_epoch=True, prog_bar=True)
+
+        return train_loss
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
@@ -201,10 +214,46 @@ class Seq2SeqModel(pl.LightningModule):
         # Generate masks
         src_mask = None
         tgt_mask = self.generate_square_subsequent_mask(tgt_input.size(1))
-        loss = self.forward(src, tgt_input, src_mask, tgt_mask)
-        loss = self.criterion(loss.view(-1, loss.size(-1)), tgt_output.contiguous().view(-1))
+        val_loss = self.forward(src, tgt_input, src_mask, tgt_mask)
+        val_loss = self.criterion(val_loss.view(-1, val_loss.size(-1)), tgt_output.contiguous().view(-1))
 
-        return loss
+        # BLEU Score Computation
+        predictions = self.decode(src, max_len=tgt.size(1))
+        predictions = predictions.cpu().tolist()
+        references = tgt.cpu().tolist()
+
+        # Convert to list of sentences (tokens), where each sentence is a list of tokens
+        # BLEU expects references and predictions to be in this form
+        pred_sentences = [[int(x) for x in pred] for pred in predictions]
+        ref_sentences = [[int(x) for x in ref] for ref in references]
+
+        # Compute BLEU score
+        bleu_score = 0.0
+        for pred, ref in zip(pred_sentences, ref_sentences):
+            bleu_score += sentence_bleu([ref], pred, smoothing_function=SmoothingFunction().method1)
+
+        bleu_score /= len(pred_sentences)  # Average BLEU score over the batch
+
+        self.log("val_loss", val_loss, prog_bar=True)
+        self.log("val_bleu", bleu_score, prog_bar=True)
+
+        return val_loss
+    
+    def decode(self, src, max_len=50, start_token_id=2, end_token_id=3):
+        memory = self.encoder(src)
+        ys = torch.ones(src.size(0), 1).fill_(start_token_id).type_as(src)
+
+        for i in range(max_len - 1):
+            tgt_mask = self.generate_square_subsequent_mask(ys.size(1)).to(self.device)
+            output = self.decoder(ys, memory, tgt_mask)
+            prob = self.output_layer(output[:, -1, :])
+            prob = self.softmax(prob)
+            _, next_word = torch.max(prob, dim=1)
+            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)
+
+            if torch.all(next_word == end_token_id):
+                break
+        return ys
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -219,7 +268,7 @@ if __name__ == "__main__":
     # Define hyperparameters
     input_file = "eng_fra.txt"
     batch_size = 32
-    vocab_size = 1000
+    vocab_size = 8000
     lr = 1e-4
     d_model = 512
     nhead = 8
@@ -241,15 +290,31 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger(project="eng2fre-translation")
 
     # Add early stopping and checkpointing
-    early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
-    checkpoint_callback = ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min")
+    early_stopping = EarlyStopping(
+        monitor="val_loss",  # Metric to monitor
+        patience=3,          # Number of epochs with no improvement to wait before stopping
+        verbose=True,        # Print a message when stopping
+        mode="min"           # "min" because we're minimizing validation loss
+    )
+
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",  # Metric to monitor
+        save_top_k=1,        # Save only the best model
+        mode="min",          # "min" for loss, "max" for metrics like accuracy
+        save_weights_only=False,  # Save full model (weights + architecture)
+        dirpath="checkpoints",    # Directory to save checkpoints
+        filename="model-{epoch:02d}-{val_loss:.2f}"  # Naming convention
+    )
 
     # Train the model
+    device = "gpu" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     trainer = pl.Trainer(
         max_epochs=20,
-        accelerator="gpu" if torch.torch.cuda.is_available() else "cpu",
+        accelerator=device,
         logger=wandb_logger,
         callbacks=[early_stopping, checkpoint_callback],
-        gradient_clip_val=1.0
-    )
+        gradient_clip_val=1.0)
+    
     trainer.fit(model, data_module)
+
+    print("Training completed successfully!")
