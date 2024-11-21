@@ -31,15 +31,17 @@ def preprocess_and_split(input_file, vocab_size=8000, test_size=0.2, random_stat
     # Train SentencePiece tokenizers for English and French
     def train_tokenizer(sentences, model_prefix):
         temp_file = f"{model_prefix}_temp.txt"
-        with open(f"{model_prefix}_corpus.txt", "w", encoding='utf-8') as f:
+        with open(temp_file, "w", encoding='utf-8') as f:
             f.write("\n".join(sentences))
         spm.SentencePieceTrainer.train(
             input=temp_file, model_prefix=model_prefix, vocab_size=vocab_size, character_coverage=1.0
         )
 
+    # Train tokenizers
     train_tokenizer(english_sentences, "english_bpe")
     train_tokenizer(french_sentences, "french_bpe")
 
+    # Load tokenizers
     english_tokenizer = spm.SentencePieceProcessor(model_file="english_bpe.model")
     french_tokenizer = spm.SentencePieceProcessor(model_file="french_bpe.model")
 
@@ -57,6 +59,7 @@ def preprocess_and_split(input_file, vocab_size=8000, test_size=0.2, random_stat
 # Dataset and DataModule
 # ------------------------------
 
+# Define a Dataset class to handle tokenized sentences
 class TranslationDataset(Dataset):
     def __init__(self, data):
         self.data = data
@@ -70,6 +73,7 @@ class TranslationDataset(Dataset):
         tgt = torch.tensor(tgt, dtype=torch.long)
         return src, tgt
 
+# Define a collate function to pad sequences dynamically
 def collate_fn(batch):
     src_batch, tgt_batch = zip(*batch)
 
@@ -79,6 +83,7 @@ def collate_fn(batch):
 
     return src_batch, tgt_batch
 
+# Define a DataModule class
 class TranslationDataModule(pl.LightningDataModule):
     def __init__(self, train_data, val_data, batch_size=32):
         super().__init__()
@@ -101,6 +106,7 @@ class TranslationDataModule(pl.LightningDataModule):
 # Seq2Seq Transformer Model
 # ------------------------------
 
+# Define a Positional Encoding class
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
@@ -117,6 +123,7 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
+# Define a Decoder class
 class Decoder(nn.Module):
     def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
         super().__init__()
@@ -136,6 +143,7 @@ class Decoder(nn.Module):
         )
         return output.transpose(0, 1)  # Return to (batch_size, tgt_seq_len, d_model)
 
+# Define an Encoder class
 class Encoder(nn.Module):
     def __init__(self, vocab_size, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.1):
         super(Encoder, self).__init__()
@@ -144,7 +152,8 @@ class Encoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-    def forward(self, src, src_key_padding_mask=None):
+    
+    def forward(self, src, src_key_padding_mask=None):        
         src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
         src = self.pos_encoder(src.transpose(0, 1))  # Transformer expects (seq_len, batch_size, d_model)
         output = self.encoder(
@@ -153,7 +162,7 @@ class Encoder(nn.Module):
         )
         return output.transpose(0, 1)  # Return to (batch_size, seq_len, d_model)
 
-    
+# Define a Seq2SeqModel
 class Seq2SeqModel(pl.LightningModule):
     def __init__(self, src_vocab_size, tgt_vocab_size, d_model, nhead, num_encoder_layers, num_decoder_layers,
                  dim_feedforward, lr, max_len=5000, dropout=0.1):
@@ -298,13 +307,14 @@ if __name__ == "__main__":
     )
 
     # Train the model
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     trainer = pl.Trainer(
         max_epochs=20,
-        accelerator="gpu" if torch.backends.mps.is_available() else "cpu",
+        accelerator=device,
         logger=wandb_logger,
         callbacks=[early_stopping, checkpoint_callback],
-        gradient_clip_val=1.0
-    )
+        gradient_clip_val=1.0)
+    
     trainer.fit(model, data_module)
 
     print("Training completed successfully!")
