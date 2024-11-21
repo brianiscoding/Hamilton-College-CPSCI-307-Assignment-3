@@ -31,7 +31,7 @@ def preprocess_and_split(input_file, vocab_size=8000, test_size=0.2, random_stat
     # Train SentencePiece tokenizers for English and French
     def train_tokenizer(sentences, model_prefix):
         temp_file = f"{model_prefix}_temp.txt"
-        with open(temp_file, "w") as f:
+        with open(f"{model_prefix}_corpus.txt", "w", encoding='utf-8') as f:
             f.write("\n".join(sentences))
         spm.SentencePieceTrainer.train(
             input=temp_file, model_prefix=model_prefix, vocab_size=vocab_size, character_coverage=1.0
@@ -208,15 +208,26 @@ class Seq2SeqModel(pl.LightningModule):
         val_loss = self.forward(src, tgt_input, src_mask, tgt_mask)
         val_loss = self.criterion(val_loss.view(-1, val_loss.size(-1)), tgt_output.contiguous().view(-1))
 
-        self.log("val_loss", val_loss, on_epoch=True, prog_bar=True)
-
         # BLEU Score Computation
         predictions = self.decode(src, max_len=tgt.size(1))
         predictions = predictions.cpu().tolist()
         references = tgt.cpu().tolist()
-        
+
+        # Convert to list of sentences (tokens), where each sentence is a list of tokens
+        # BLEU expects references and predictions to be in this form
+        pred_sentences = [[int(x) for x in pred] for pred in predictions]
+        ref_sentences = [[int(x) for x in ref] for ref in references]
+
+        # Compute BLEU score
+        bleu_score = 0.0
+        for pred, ref in zip(pred_sentences, ref_sentences):
+            bleu_score += sentence_bleu([ref], pred, smoothing_function=SmoothingFunction().method1)
+
+        bleu_score /= len(pred_sentences)  # Average BLEU score over the batch
+
         self.log("val_loss", val_loss, prog_bar=True)
-        
+        self.log("val_bleu", bleu_score, prog_bar=True)
+
         return val_loss
     
     def decode(self, src, max_len=50, start_token_id=2, end_token_id=3):
@@ -270,13 +281,26 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger(project="eng2fre-translation")
 
     # Add early stopping and checkpointing
-    early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
-    checkpoint_callback = ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min")
+    early_stopping = EarlyStopping(
+        monitor="val_loss",  # Metric to monitor
+        patience=3,          # Number of epochs with no improvement to wait before stopping
+        verbose=True,        # Print a message when stopping
+        mode="min"           # "min" because we're minimizing validation loss
+    )
+
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",  # Metric to monitor
+        save_top_k=1,        # Save only the best model
+        mode="min",          # "min" for loss, "max" for metrics like accuracy
+        save_weights_only=False,  # Save full model (weights + architecture)
+        dirpath="checkpoints",    # Directory to save checkpoints
+        filename="model-{epoch:02d}-{val_loss:.2f}"  # Naming convention
+    )
 
     # Train the model
     trainer = pl.Trainer(
         max_epochs=20,
-        accelerator="mps" if torch.backends.mps.is_available() else "cpu",
+        accelerator="gpu" if torch.backends.mps.is_available() else "cpu",
         logger=wandb_logger,
         callbacks=[early_stopping, checkpoint_callback],
         gradient_clip_val=1.0
