@@ -21,6 +21,7 @@ The following files must be in the directory:
 - checkpoint.ckpt
 - english_bpe.model
 - french_bpe.model
+- eng_fra.txt
 
 ## Executing program
 
